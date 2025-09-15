@@ -1,0 +1,244 @@
+import pandas as pd
+import numpy as np
+bank_transactions = pd.read_csv('Downloads/bank_transactions_data_2.csv')
+bank_transactions.head()
+bank_transactions.info()
+bank_transactions.describe()
+bank_transactions.isna().sum()
+#Convert datetime columns
+bank_transactions['TransactionDate'] = pd.to_datetime(bank_transactions['TransactionDate'])
+bank_transactions['PreviousTransactionDate'] = pd.to_datetime(bank_transactions['PreviousTransactionDate'])
+# Feature engineering: extract useful time features
+bank_transactions['TransactionHour'] = bank_transactions['TransactionDate'].dt.hour
+bank_transactions['TransactionDay'] = bank_transactions['TransactionDate'].dt.dayofweek
+bank_transactions['TransactionMonth'] = bank_transactions['TransactionDate'].dt.month
+# Time gap between transactions (recency)
+bank_transactions['TimeSincePrevTransaction'] = (
+    bank_transactions['TransactionDate'] - bank_transactions['PreviousTransactionDate']
+).dt.total_seconds() / 3600  # in hours
+bank_transactions = bank_transactions.drop(columns=[
+    'TransactionID', 'AccountID', 'DeviceID', 'IP Address', 'MerchantID'
+])
+import seaborn as sns
+import matplotlib.pyplot as plt
+# Transaction amount distribution
+sns.histplot(bank_transactions['TransactionAmount'], bins=50, kde=True)
+plt.show()
+
+# Transactions by type
+sns.countplot(data=bank_transactions, x='TransactionType')
+plt.show()
+
+# Transactions by channel
+sns.countplot(data=bank_transactions, x='Channel')
+plt.show()
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+
+# Select features for segmentation
+segmentation_features = [
+    'CustomerAge',
+    'TransactionAmount',
+    'TransactionDuration',
+    'AccountBalance'
+]
+
+X_seg = bank_transactions[segmentation_features].copy()
+
+# Scale the data
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X_seg)
+
+# Run KMeans clustering
+kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
+bank_transactions['CustomerSegment'] = kmeans.fit_predict(X_scaled)
+
+# Check segment distribution
+print(bank_transactions['CustomerSegment'].value_counts())
+# Profile each segment
+segment_profile = bank_transactions.groupby('CustomerSegment')[
+    ['CustomerAge', 'TransactionAmount', 'TransactionDuration', 'AccountBalance']
+].mean().round(2)
+
+print(segment_profile)
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# 1. Age vs Account Balance
+plt.figure(figsize=(8,6))
+sns.scatterplot(
+    x='CustomerAge',
+    y='AccountBalance',
+    hue='CustomerSegment',
+    data=bank_transactions,
+    palette='tab10'
+)
+plt.title("Customer Segmentation: Age vs Account Balance")
+plt.xlabel("Customer Age")
+plt.ylabel("Account Balance")
+plt.legend(title="Segment")
+plt.show()
+
+# 2. Transaction Amount vs Duration
+plt.figure(figsize=(8,6))
+sns.scatterplot(
+    x='TransactionAmount',
+    y='TransactionDuration',
+    hue='CustomerSegment',
+    data=bank_transactions,
+    palette='tab10'
+)
+plt.title("Customer Segmentation: Transaction Amount vs Duration")
+plt.xlabel("Transaction Amount")
+plt.ylabel("Transaction Duration (sec)")
+plt.legend(title="Segment")
+plt.show()
+# Fraud Risk & Anomaly Detection
+
+# Define anomaly thresholds
+high_amount_threshold = bank_transactions['TransactionAmount'].quantile(0.99)  # top 1% spend
+late_night_hours = [0,1,2,3,4]  # midnight to 4AM
+failed_login_threshold = 3  # more than 3 attempts
+
+# Create anomaly flags
+bank_transactions['HighAmountFlag'] = (bank_transactions['TransactionAmount'] > high_amount_threshold).astype(int)
+bank_transactions['LateNightFlag'] = bank_transactions['TransactionHour'].isin(late_night_hours).astype(int)
+bank_transactions['FailedLoginFlag'] = (bank_transactions['LoginAttempts'] > failed_login_threshold).astype(int)
+
+# Combine into overall anomaly score
+bank_transactions['AnomalyScore'] = (
+    bank_transactions['HighAmountFlag'] +
+    bank_transactions['LateNightFlag'] +
+    bank_transactions['FailedLoginFlag']
+)
+
+# See top risky transactions
+risky_transactions = bank_transactions[bank_transactions['AnomalyScore'] >= 2]
+print(risky_transactions.head())
+#High Transaction-to-Balance Ratio
+bank_transactions['HighRatioFlag'] = (
+    (bank_transactions['TransactionAmount'] / bank_transactions['AccountBalance']) > 0.8
+).astype(int)
+#Very Frequent Transactions in Short Time
+bank_transactions['RapidTxnFlag'] = (
+    bank_transactions['TimeSincePrevTransaction'] < 60  # < 1 minute between txns
+).astype(int)
+#Unusual Channel for Age Group
+
+bank_transactions['AgeChannelFlag'] = (
+    ((bank_transactions['CustomerAge'] < 21) & (bank_transactions['Channel'] == 'ATM')) |
+    ((bank_transactions['CustomerAge'] > 65) & (bank_transactions['Channel'] == 'Online'))
+).astype(int)
+#Update Overall Anomaly Score
+bank_transactions['AnomalyScore'] = (
+    bank_transactions['HighAmountFlag'] +
+    bank_transactions['LateNightFlag'] +
+    bank_transactions['FailedLoginFlag'] +
+    bank_transactions['HighRatioFlag'] +
+    bank_transactions['RapidTxnFlag'] +
+    bank_transactions['AgeChannelFlag']
+)
+
+# Distribution of anomaly levels
+print(bank_transactions['AnomalyScore'].value_counts())
+# Flag transactions with multiple login attempts (e.g., >3 tries)
+bank_transactions['MultiLoginFlag'] = np.where(bank_transactions['LoginAttempts'] > 3, 1, 0)
+
+# Check distribution
+print(bank_transactions['MultiLoginFlag'].value_counts(normalize=True) * 100)
+# Compare anomaly distribution for transactions with multiple logins
+multi_login_anomalies = (
+    bank_transactions.groupby('MultiLoginFlag')['AnomalyScore']
+    .value_counts(normalize=True)
+    .unstack(fill_value=0) * 100
+)
+
+print(multi_login_anomalies)
+
+# Visualization
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(8,5))
+sns.barplot(
+    x=multi_login_anomalies.index,
+    y=multi_login_anomalies[2] + multi_login_anomalies[3] + multi_login_anomalies[4],
+    hue=multi_login_anomalies.index,  # add hue = x
+    palette="Reds",
+    legend=False   # hide duplicate legend
+)
+plt.xticks([0,1], ["Normal Login", "Multiple Logins"])
+plt.ylabel("% High Risk Transactions")
+plt.title("High Risk % for Multiple Login Attempts")
+plt.show()
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
+
+# Target
+y = bank_transactions['RiskLevel']
+
+# Features (drop only what we must exclude)
+X = bank_transactions.drop(columns=[
+    'TransactionDate', 'PreviousTransactionDate', 'RiskLevel'
+])
+
+# Encode categorical variables
+X = pd.get_dummies(X, drop_first=True)
+# Train/Test Split
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=42
+)
+#Train a Random Forest Model
+
+#Random Forest is great for feature-rich fraud datasets
+rf = RandomForestClassifier(n_estimators=200, random_state=42, class_weight='balanced')
+rf.fit(X_train, y_train)
+
+y_pred = rf.predict(X_test)
+y_proba = rf.predict_proba(X_test)[:,1]
+
+# Evaluate Model
+print("Classification Report:")
+print(classification_report(y_test, y_pred))
+
+print("ROC-AUC Score:", roc_auc_score((y_test=="High Risk").astype(int), y_proba))
+
+# Confusion Matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+cm = confusion_matrix(y_test, y_pred, labels=['Normal','High Risk'])
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=['Normal','High Risk'], yticklabels=['Normal','High Risk'])
+plt.title("Confusion Matrix")
+plt.show()
+
+# Feature Importance
+importances = pd.Series(rf.feature_importances_, index=X.columns).sort_values(ascending=False)
+print(importances.head(10))
+
+importances.head(15).plot(kind='barh', figsize=(10,6))
+plt.title("Top 15 Feature Importances")
+plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
